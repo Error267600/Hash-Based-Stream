@@ -5,4 +5,4 @@ Use in Alpine Linux, gcc and OpenSSL-Dev is needed.
 ```ash
 gcc -O2 -std=c11 -Wall -Wextra -o Code Code.c -lssl -lcrypto
 ```
-Change Code to whatever you name your file.
+Change Code to whatever you named your file.
