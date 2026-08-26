@@ -5,7 +5,10 @@ Use in Alpine Linux, gcc and OpenSSL-Dev is needed.
 ```ash
 gcc -O2 -std=c11 -Wall -Wextra -o Main Main.c -lssl -lcrypto
 ```
-Change Main to whatever you want to name your file and Main.c to the path of the code, if you downloaded it directly from this repo, just run the above command and run with './'.
+Build with above command and run.
+# Supported OS
+Any os that can emulate Alpine and/or run gcc with OpenSSL should work.  
+If you are on iOS, I suggest ish shell on App Store.
 # SECURITY NOTICE
 This is a custom cryptographic construction.
 It has NOT been formally audited or peer-reviewed.
