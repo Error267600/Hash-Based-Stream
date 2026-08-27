@@ -19,6 +19,7 @@
 #define EOF_MARKER    "EOF"
 #define DEFAULT_MULTILINE_MAX (1024 * 1024)
 #define ABSOLUTE_MULTILINE_MAX (1024UL * 1024 * 1024)
+#define OUTPUT_FILE_THRESHOLD 250
 
 static bool g_debug_mode = false;
 static size_t g_multiline_max = DEFAULT_MULTILINE_MAX;
@@ -98,6 +99,56 @@ static char *read_input(const char *first_line, size_t *out_len) {
         *out_len = len;
         return buf;
     }
+}
+
+static char *read_file(const char *path, size_t *out_len) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return NULL; }
+    rewind(f);
+
+    char *buf = malloc((size_t)sz + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    size_t nread = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+
+    buf[nread] = '\0';
+    *out_len = nread;
+    return buf;
+}
+
+static bool is_txt_path(const char *s) {
+    size_t len = strlen(s);
+    if (len < 4) return false;
+    return strcasecmp(s + len - 4, ".txt") == 0;
+}
+
+static bool write_output_file(const uint8_t nonce[NONCE_LEN],
+                              const void *data, size_t len) {
+    char fname[NONCE_LEN * 2 + 5];
+    for (int i = 0; i < NONCE_LEN; i++)
+        sprintf(fname + i * 2, "%02x", nonce[i]);
+    strcpy(fname + NONCE_LEN * 2, ".txt");
+
+    FILE *f = fopen(fname, "wb");
+    if (!f) {
+        printf("  [ERROR] Could not create output file: %s\n", fname);
+        return false;
+    }
+    size_t written = fwrite(data, 1, len, f);
+    fclose(f);
+
+    if (written != len) {
+        printf("  [ERROR] Short write to %s (%zu/%zu bytes)\n", fname, written, len);
+        remove(fname);
+        return false;
+    }
+    printf("  ✓ Output written to file: %s (%zu bytes)\n", fname, len);
+    return true;
 }
 
 static size_t strip_non_hex(char *s, size_t len) {
@@ -573,7 +624,7 @@ static void settings_menu(void) {
             } else if (val > abs_max_mib) {
                 printf("  [ERROR] Exceeds cipher limit of %zu MiB.\n", abs_max_mib);
             } else {
-                g_multiline_max = (size_t)val * 1024 * 1024;
+                g_multiline_max = val * 1024 * 1024;
                 printf("  ✓ Max multiline set to %zu MiB (%zu bytes)\n",
                        val, g_multiline_max);
             }
@@ -613,14 +664,25 @@ int main(void) {
         if (!safe_getline(line, sizeof(line))) break;
 
         if (strcmp(line, "1") == 0) {
-            prompt("Enter plaintext (or SOF for multiline): ");
+            prompt("Enter plaintext, .txt path, or SOF for multiline: ");
             if (!safe_getline(line, sizeof(line))) break;
 
             size_t pt_len = 0;
-            char *pt_buf = read_input(line, &pt_len);
-            if (!pt_buf) {
-                printf("\n[ERROR] Failed to read plaintext.\n");
-                continue;
+            char *pt_buf = NULL;
+
+            if (is_txt_path(line)) {
+                pt_buf = read_file(line, &pt_len);
+                if (!pt_buf) {
+                    printf("\n[ERROR] Failed to read file: %s\n", line);
+                    continue;
+                }
+                printf("  ✓ Loaded %zu bytes from %s\n", pt_len, line);
+            } else {
+                pt_buf = read_input(line, &pt_len);
+                if (!pt_buf) {
+                    printf("\n[ERROR] Failed to read plaintext.\n");
+                    continue;
+                }
             }
 
             prompt("Enter AAD (optional, Enter to skip, or SOF for multiline): ");
@@ -655,10 +717,20 @@ int main(void) {
             printf("  Ciphertext len: %zu bytes\n", ct_len);
             printf("  Overhead      : %zu bytes\n", ct_len - pt_len);
             printf("  Nonce used    : "); print_hex(nonce, NONCE_LEN); printf("\n");
-            printf("  CT (hex)      :\n    ");
+
             char *ct_hex = bytes_to_hex_alloc(ct, ct_len);
-            printf("%s\n", ct_hex);
-            free(ct_hex);
+            if (!ct_hex) {
+                printf("  [ERROR] Failed to allocate hex string.\n");
+            } else {
+                size_t hex_len = strlen(ct_hex);
+                if (hex_len > OUTPUT_FILE_THRESHOLD) {
+                    printf("  CT (hex)      : [%zu chars → writing to file]\n", hex_len);
+                    write_output_file(nonce, ct_hex, hex_len);
+                } else {
+                    printf("  CT (hex)      :\n    %s\n", ct_hex);
+                }
+                free(ct_hex);
+            }
 
             size_t rt_len = 0;
             uint8_t *rt = decrypt_data(master_key, nonce, ct, ct_len,
@@ -742,9 +814,15 @@ int main(void) {
             uint8_t *pt = decrypt_data(master_key, extracted_nonce, ct, ct_len,
                                        (const uint8_t *)aad_buf, aad_len, &pt_len);
             if (pt) {
-                printf("\n[Decryption Successful]\nOutput:\n");
-                fwrite(pt, 1, pt_len, stdout);
-                printf("\n");
+                printf("\n[Decryption Successful]\n");
+                if (pt_len > OUTPUT_FILE_THRESHOLD) {
+                    printf("Output: [%zu bytes → writing to file]\n", pt_len);
+                    write_output_file(extracted_nonce, pt, pt_len);
+                } else {
+                    printf("Output:\n");
+                    fwrite(pt, 1, pt_len, stdout);
+                    printf("\n");
+                }
                 secure_zero(pt, pt_len);
                 free(pt);
             } else {
